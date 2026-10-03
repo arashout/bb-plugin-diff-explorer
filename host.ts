@@ -1,0 +1,190 @@
+import { spawn, type ChildProcess } from "node:child_process";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { experimental_defineHostEntry } from "@get-bb/plugin-sdk/host";
+import { hostContract, type Location } from "./contract";
+
+const TS = ["npx", "--yes", "-p", "typescript", "-p", "typescript-language-server", "typescript-language-server", "--stdio"];
+const PY = ["pyright-langserver", "--stdio"];
+const C = ["clangd"];
+
+const SERVERS: Record<string, { cmd: string[]; languageId: string }> = {
+  ".ts": { cmd: TS, languageId: "typescript" },
+  ".mts": { cmd: TS, languageId: "typescript" },
+  ".cts": { cmd: TS, languageId: "typescript" },
+  ".tsx": { cmd: TS, languageId: "typescriptreact" },
+  ".js": { cmd: TS, languageId: "javascript" },
+  ".mjs": { cmd: TS, languageId: "javascript" },
+  ".cjs": { cmd: TS, languageId: "javascript" },
+  ".jsx": { cmd: TS, languageId: "javascriptreact" },
+  ".go": { cmd: ["gopls"], languageId: "go" },
+  ".rs": { cmd: ["rust-analyzer"], languageId: "rust" },
+  ".py": { cmd: PY, languageId: "python" },
+  ".pyi": { cmd: PY, languageId: "python" },
+  ".c": { cmd: C, languageId: "c" },
+  ".h": { cmd: C, languageId: "c" },
+  ".cc": { cmd: C, languageId: "cpp" },
+  ".cpp": { cmd: C, languageId: "cpp" },
+  ".hpp": { cmd: C, languageId: "cpp" },
+  ".swift": { cmd: ["sourcekit-lsp"], languageId: "swift" },
+};
+
+const REQUEST_TIMEOUT_MS = 60_000;
+
+type Message = { id?: number | string; method?: string; params?: any; result?: unknown; error?: { message: string } };
+
+class LanguageServer {
+  private child: ChildProcess;
+  private buffer = Buffer.alloc(0);
+  private nextId = 1;
+  private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+  private documents = new Map<string, { version: number; text: string }>();
+  readonly ready: Promise<unknown>;
+  exited = false;
+
+  constructor(cmd: string[], root: string) {
+    this.child = spawn(cmd[0], cmd.slice(1), { cwd: root, stdio: ["pipe", "pipe", "ignore"] });
+    this.child.stdout!.on("data", (chunk: Buffer) => this.onData(chunk));
+    this.child.on("exit", () => this.fail(new Error(`${cmd[0]} exited`)));
+    this.child.on("error", (error) => this.fail(error));
+    const rootUri = pathToFileURL(root).href;
+    this.ready = this.request("initialize", {
+      processId: process.pid,
+      rootUri,
+      rootPath: root,
+      workspaceFolders: [{ uri: rootUri, name: path.basename(root) }],
+      capabilities: {
+        textDocument: { definition: { linkSupport: true }, synchronization: {} },
+        workspace: { configuration: true, workspaceFolders: true },
+        window: { workDoneProgress: true },
+      },
+    }).then(() => this.notify("initialized", {}));
+  }
+
+  async definition(file: string, line: number, column: number, languageId: string): Promise<Location[]> {
+    await this.ready;
+    const uri = pathToFileURL(file).href;
+    const text = await readFile(file, "utf8");
+    const open = this.documents.get(uri);
+    if (open === undefined) {
+      this.documents.set(uri, { version: 1, text });
+      this.notify("textDocument/didOpen", { textDocument: { uri, languageId, version: 1, text } });
+    } else if (open.text !== text) {
+      open.version += 1;
+      open.text = text;
+      this.notify("textDocument/didChange", {
+        textDocument: { uri, version: open.version },
+        contentChanges: [{ text }],
+      });
+    }
+    const result = await this.request("textDocument/definition", {
+      textDocument: { uri },
+      position: { line: line - 1, character: column - 1 },
+    });
+    const items = result === null ? [] : Array.isArray(result) ? result : [result];
+    return items
+      .map((item: any) => ({ uri: item.targetUri ?? item.uri, range: item.targetSelectionRange ?? item.range }))
+      .filter((item) => item.uri.startsWith("file:"))
+      .map((item) => ({
+        path: fileURLToPath(item.uri),
+        line: item.range.start.line + 1,
+        column: item.range.start.character + 1,
+      }));
+  }
+
+  dispose() {
+    this.child.kill();
+  }
+
+  private request(method: string, params: unknown): Promise<unknown> {
+    const id = this.nextId++;
+    this.send({ jsonrpc: "2.0", id, method, params });
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`${method} timed out`));
+      }, REQUEST_TIMEOUT_MS);
+      this.pending.set(id, {
+        resolve: (v) => (clearTimeout(timer), resolve(v)),
+        reject: (e) => (clearTimeout(timer), reject(e)),
+      });
+    });
+  }
+
+  private notify(method: string, params: unknown) {
+    this.send({ jsonrpc: "2.0", method, params });
+  }
+
+  private send(message: object) {
+    const body = Buffer.from(JSON.stringify(message), "utf8");
+    this.child.stdin!.write(`Content-Length: ${body.length}\r\n\r\n`);
+    this.child.stdin!.write(body);
+  }
+
+  private onData(chunk: Buffer) {
+    this.buffer = Buffer.concat([this.buffer, chunk]);
+    for (;;) {
+      const headerEnd = this.buffer.indexOf("\r\n\r\n");
+      if (headerEnd === -1) return;
+      const length = Number(/Content-Length: (\d+)/i.exec(this.buffer.subarray(0, headerEnd).toString())![1]);
+      const start = headerEnd + 4;
+      if (this.buffer.length < start + length) return;
+      const message: Message = JSON.parse(this.buffer.subarray(start, start + length).toString("utf8"));
+      this.buffer = this.buffer.subarray(start + length);
+      this.onMessage(message);
+    }
+  }
+
+  private onMessage(message: Message) {
+    if (message.method !== undefined) {
+      if (message.id === undefined) return;
+      const result = message.method === "workspace/configuration" ? message.params.items.map(() => null) : null;
+      this.send({ jsonrpc: "2.0", id: message.id, result });
+      return;
+    }
+    const pending = this.pending.get(message.id as number);
+    if (pending === undefined) return;
+    this.pending.delete(message.id as number);
+    if (message.error) pending.reject(new Error(message.error.message));
+    else pending.resolve(message.result ?? null);
+  }
+
+  private fail(error: Error) {
+    this.exited = true;
+    for (const pending of this.pending.values()) pending.reject(error);
+    this.pending.clear();
+  }
+}
+
+// ponytail: servers live as long as the host worker (idle-stopped after 5 min); add a retainWorker lease if cold starts hurt
+const servers = new Map<string, LanguageServer>();
+
+function serverFor(root: string, cmd: string[]) {
+  const key = `${root}\0${cmd.join(" ")}`;
+  let server = servers.get(key);
+  if (server === undefined || server.exited) {
+    server = new LanguageServer(cmd, root);
+    servers.set(key, server);
+  }
+  return server;
+}
+
+export default experimental_defineHostEntry({
+  contract: hostContract,
+  handlers: {
+    async definition({ root, path: file, line, column }) {
+      const spec = SERVERS[path.extname(file).toLowerCase()];
+      if (spec === undefined) return { locations: [] };
+      const locations = await serverFor(root, spec.cmd).definition(file, line, column, spec.languageId);
+      return { locations };
+    },
+    async read({ path: file }) {
+      return { content: await readFile(file, "utf8") };
+    },
+  },
+  dispose() {
+    for (const server of servers.values()) server.dispose();
+    servers.clear();
+  },
+});
