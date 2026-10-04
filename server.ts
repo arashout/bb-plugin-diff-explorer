@@ -3,7 +3,9 @@ import { fileURLToPath } from "node:url";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { hostContract, rpcContract, type DiffFile } from "./contract";
 
-const MONACO_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "monaco");
+// Path installs run server.ts from the plugin root; git and npm installs run the bundled dist/server.js.
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const MONACO_DIR = path.join(path.basename(HERE) === "dist" ? path.dirname(HERE) : HERE, "monaco");
 
 export default async function plugin(bb: BbPluginApi) {
   const host = bb.hosts.experimental_client({ contract: hostContract });
