@@ -6,29 +6,20 @@ import { experimental_defineHostEntry } from "@get-bb/plugin-sdk/host";
 import { hostContract, type Location } from "./contract";
 
 const TS = ["npx", "--yes", "-p", "typescript", "-p", "typescript-language-server", "typescript-language-server", "--stdio"];
-const PY = ["pyright-langserver", "--stdio"];
-const C = ["clangd"];
 
-const SERVERS: Record<string, { cmd: string[]; languageId: string }> = {
-  ".ts": { cmd: TS, languageId: "typescript" },
-  ".mts": { cmd: TS, languageId: "typescript" },
-  ".cts": { cmd: TS, languageId: "typescript" },
-  ".tsx": { cmd: TS, languageId: "typescriptreact" },
-  ".js": { cmd: TS, languageId: "javascript" },
-  ".mjs": { cmd: TS, languageId: "javascript" },
-  ".cjs": { cmd: TS, languageId: "javascript" },
-  ".jsx": { cmd: TS, languageId: "javascriptreact" },
-  ".go": { cmd: ["gopls"], languageId: "go" },
-  ".rs": { cmd: ["rust-analyzer"], languageId: "rust" },
-  ".py": { cmd: PY, languageId: "python" },
-  ".pyi": { cmd: PY, languageId: "python" },
-  ".c": { cmd: C, languageId: "c" },
-  ".h": { cmd: C, languageId: "c" },
-  ".cc": { cmd: C, languageId: "cpp" },
-  ".cpp": { cmd: C, languageId: "cpp" },
-  ".hpp": { cmd: C, languageId: "cpp" },
-  ".swift": { cmd: ["sourcekit-lsp"], languageId: "swift" },
-};
+// [command, { extension: LSP languageId }]
+const SERVER_GROUPS: [string[], Record<string, string>][] = [
+  [TS, { ".ts": "typescript", ".mts": "typescript", ".cts": "typescript", ".tsx": "typescriptreact" }],
+  [TS, { ".js": "javascript", ".mjs": "javascript", ".cjs": "javascript", ".jsx": "javascriptreact" }],
+  [["gopls"], { ".go": "go" }],
+  [["rust-analyzer"], { ".rs": "rust" }],
+  [["pyright-langserver", "--stdio"], { ".py": "python", ".pyi": "python" }],
+  [["clangd"], { ".c": "c", ".h": "c", ".cc": "cpp", ".cpp": "cpp", ".hpp": "cpp" }],
+  [["sourcekit-lsp"], { ".swift": "swift" }],
+];
+const SERVERS = Object.fromEntries(
+  SERVER_GROUPS.flatMap(([cmd, exts]) => Object.entries(exts).map(([ext, languageId]) => [ext, { cmd, languageId }])),
+);
 
 const REQUEST_TIMEOUT_MS = 60_000;
 

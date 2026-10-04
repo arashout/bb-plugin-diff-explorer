@@ -25,22 +25,29 @@ export default async function plugin(bb: BbPluginApi) {
       return { baseUrl: preview.baseUrl };
     },
 
-    async load({ threadId }) {
+    async load({ threadId, target }) {
       const thread = await bb.sdk.threads.get({ threadId });
       if (!thread.environmentId) throw new Error("This thread has no environment");
       const environmentId = thread.environmentId;
-      const { root } = await environment(environmentId);
-      const diff = await bb.sdk.environments.diffFiles({ environmentId, target: "uncommitted" });
+      const env = await bb.sdk.environments.get({ environmentId });
+      if (!env.path) throw new Error("This environment has no workspace path");
+      const root = env.path;
+      const baseBranch = env.mergeBaseBranch ?? env.baseBranch ?? env.defaultBranch;
+      if (baseBranch === null) throw new Error("This environment has no base branch");
+      // "all" = everything since the merge base with the base branch, committed or not.
+      const diff = await bb.sdk.environments.diffFiles(
+        target === "uncommitted"
+          ? { environmentId, target: "uncommitted" }
+          : { environmentId, target: "all", mergeBaseBranch: baseBranch },
+      );
       if (diff.outcome !== "available") {
         throw new Error(diff.outcome === "unavailable" ? diff.failure.message : diff.message);
       }
+      const { mergeBaseRef } = diff;
+      const query = target === "uncommitted" ? ({ target } as const) : mergeBaseRef === null ? null : ({ target, mergeBaseRef } as const);
+      if (query === null) throw new Error(`No merge base with ${baseBranch}`);
       const side = async (filePath: string, which: "old" | "new") => {
-        const result = await bb.sdk.environments.diffFile({
-          environmentId,
-          target: "uncommitted",
-          path: filePath,
-          side: which,
-        });
+        const result = await bb.sdk.environments.diffFile({ environmentId, ...query, path: filePath, side: which });
         if (result.contentEncoding !== "utf8") throw new Error(`${filePath} is not text`);
         return result.content;
       };
@@ -56,8 +63,8 @@ export default async function plugin(bb: BbPluginApi) {
           newText: f.changeKind === "deleted" ? "" : await side(f.path, "new"),
         })),
       );
-      const skipped = diff.files.filter((f) => !textual.includes(f)).map((f) => f.path);
-      return { environmentId, root, files, skipped };
+      const skipped = diff.files.filter((f) => f.binary || f.loadMode === "too_large").map((f) => f.path);
+      return { environmentId, root, baseBranch, files, skipped };
     },
 
     async definition({ environmentId, ...position }) {

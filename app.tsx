@@ -3,15 +3,19 @@ import type { KeyboardEvent } from "react";
 import type * as Monaco from "monaco-editor";
 import {
   definePluginApp,
+  experimental_Icon as Icon,
   experimental_useCodeTheme,
+  useBbNavigate,
   useRpc,
+  type PluginThreadHeaderActionProps,
   type PluginThreadPanelProps,
 } from "@get-bb/plugin-sdk/app";
-import type { DiffFile, Location, rpcContract } from "./contract";
+import type { z } from "zod";
+import type { DiffFile, DiffTarget, Location, rpcContract } from "./contract";
 
 type MonacoApi = typeof Monaco;
 type Rpc = ReturnType<typeof useRpc<typeof rpcContract>>;
-type Loaded = { environmentId: string; root: string; files: DiffFile[]; skipped: string[] };
+type Loaded = z.infer<(typeof rpcContract)["load"]["output"]>;
 
 // Model URIs are <scheme>://<panelId>/<absolute path>; the authority routes a model back to its panel.
 const OLD = "bbold";
@@ -33,11 +37,14 @@ type MultiDiffDocument = {
   options: Monaco.editor.IDiffEditorOptions;
   estimatedHeight: number;
 };
-let createMultiDiffEditor: ((element: HTMLElement, documents: MultiDiffDocument[]) => { dispose(): void }) | null = null;
-let monacoPromise: Promise<MonacoApi> | null = null;
+type Bundle = {
+  monaco: MonacoApi;
+  createMultiDiffEditor(element: HTMLElement, documents: MultiDiffDocument[]): { dispose(): void };
+};
+let bundlePromise: Promise<Bundle> | null = null;
 
-function loadMonaco(baseUrl: string): Promise<MonacoApi> {
-  return (monacoPromise ??= (async () => {
+function loadMonaco(baseUrl: string): Promise<Bundle> {
+  return (bundlePromise ??= (async () => {
     const link = document.createElement("link");
     link.rel = "stylesheet";
     link.href = `${baseUrl}/editor.css`;
@@ -45,11 +52,9 @@ function loadMonaco(baseUrl: string): Promise<MonacoApi> {
     (globalThis as any).MonacoEnvironment = {
       getWorker: () => new Worker(new URL(`${baseUrl}/editor.worker.js`, window.location.origin), { type: "module" }),
     };
-    const bundle = await import(/* @vite-ignore */ `${baseUrl}/editor.js`);
-    const monaco: MonacoApi = bundle.monaco;
-    createMultiDiffEditor = bundle.createMultiDiffEditor;
-    installNavigation(monaco);
-    return monaco;
+    const bundle: Bundle = await import(/* @vite-ignore */ `${baseUrl}/editor.js`);
+    installNavigation(bundle.monaco);
+    return bundle;
   })());
 }
 
@@ -124,9 +129,10 @@ const DIFF_OPTIONS = {
 const LINE_HEIGHT = 19;
 const HEADER_HEIGHT = 40;
 
-function MultiDiff({ monaco, panelId, root, files }: { monaco: MonacoApi; panelId: string; root: string; files: DiffFile[] }) {
+function MultiDiff({ bundle, panelId, root, files }: { bundle: Bundle; panelId: string; root: string; files: DiffFile[] }) {
   const container = useRef<HTMLDivElement>(null);
   useEffect(() => {
+    const { monaco, createMultiDiffEditor } = bundle;
     const documents = files.map((file) => {
       const abs = `${root.replace(/\/$/, "")}/${file.path}`;
       const language = languageFor(monaco, file.path);
@@ -139,7 +145,7 @@ function MultiDiff({ monaco, panelId, root, files }: { monaco: MonacoApi; panelI
         estimatedHeight: HEADER_HEIGHT + (file.additions + file.deletions + 8) * LINE_HEIGHT,
       };
     });
-    const editor = createMultiDiffEditor!(container.current!, documents);
+    const editor = createMultiDiffEditor(container.current!, documents);
     return () => {
       editor.dispose();
       for (const d of documents) {
@@ -147,7 +153,7 @@ function MultiDiff({ monaco, panelId, root, files }: { monaco: MonacoApi; panelI
         d.modified.dispose();
       }
     };
-  }, [monaco, panelId, root, files]);
+  }, [bundle, panelId, root, files]);
   return <div ref={container} className="h-full" />;
 }
 
@@ -181,21 +187,23 @@ function DiffsPanel({ threadId }: PluginThreadPanelProps) {
   const rpc = useRpc<typeof rpcContract>();
   const { mode } = experimental_useCodeTheme();
   const [panelId] = useState(() => `p${Math.random().toString(36).slice(2)}`);
-  const [monaco, setMonaco] = useState<MonacoApi | null>(null);
+  const [bundle, setBundle] = useState<Bundle | null>(null);
+  const monaco = bundle?.monaco ?? null;
   const [data, setData] = useState<Loaded | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [stack, setStack] = useState<Location[]>([]);
   const [reload, setReload] = useState(0);
+  const [target, setTarget] = useState<DiffTarget>("uncommitted");
   const root = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
     setData(null);
     setStack([]);
-    Promise.all([rpc.call("assets", null).then(({ baseUrl }) => loadMonaco(baseUrl)), rpc.call("load", { threadId })]).then(
-      ([m, loaded]) => {
+    Promise.all([rpc.call("assets", null).then(({ baseUrl }) => loadMonaco(baseUrl)), rpc.call("load", { threadId, target })]).then(
+      ([b, loaded]) => {
         if (cancelled) return;
-        setMonaco(m);
+        setBundle(b);
         setData(loaded);
         setError(null);
       },
@@ -204,7 +212,7 @@ function DiffsPanel({ threadId }: PluginThreadPanelProps) {
     return () => {
       cancelled = true;
     };
-  }, [rpc, threadId, reload]);
+  }, [rpc, threadId, target, reload]);
 
   useEffect(() => {
     monaco?.editor.setTheme(mode === "dark" ? "vs-dark" : "vs");
@@ -253,9 +261,20 @@ function DiffsPanel({ threadId }: PluginThreadPanelProps) {
     <div ref={root} tabIndex={-1} onKeyDownCapture={onKeyDownCapture} className="flex h-full min-h-0 flex-col outline-none">
       <div className="flex items-center gap-2 border-b border-border px-3 py-1.5 text-xs">
         {top === undefined ? (
-          <span className="text-muted-foreground">
-            {data === null ? "Loading…" : `${data.files.length} changed files · ⌘-click a symbol to go to its definition`}
-          </span>
+          <>
+            <select
+              aria-label="Changes to show"
+              className="rounded border border-border bg-background px-1 py-0.5"
+              value={target}
+              onChange={(event) => setTarget(event.target.value as DiffTarget)}
+            >
+              <option value="all">All changes{data === null ? "" : ` vs ${data.baseBranch}`}</option>
+              <option value="uncommitted">Uncommitted</option>
+            </select>
+            <span className="text-muted-foreground">
+              {data === null ? "Loading…" : `${data.files.length} files · ⌘-click a symbol to go to its definition`}
+            </span>
+          </>
         ) : (
           <>
             <button type="button" className="rounded px-1.5 py-0.5 hover:bg-muted" onClick={back} title="Back (Ctrl+-)">
@@ -273,17 +292,17 @@ function DiffsPanel({ threadId }: PluginThreadPanelProps) {
           Refresh
         </button>
       </div>
-      {monaco === null || data === null ? null : (
+      {bundle === null || monaco === null || data === null ? null : (
         <>
           <div className="flex min-h-0 flex-1 flex-col" hidden={top !== undefined}>
-            {data.files.length === 0 ? <p className="p-4 text-sm text-muted-foreground">No uncommitted changes.</p> : null}
+            {data.files.length === 0 ? <p className="p-4 text-sm text-muted-foreground">No changes.</p> : null}
             {data.skipped.length === 0 ? null : (
               <p className="border-b border-border px-3 py-1.5 text-xs text-muted-foreground">
                 Skipped (binary or too large): {data.skipped.join(", ")}
               </p>
             )}
             <div className="min-h-0 flex-1">
-              <MultiDiff monaco={monaco} panelId={panelId} root={data.root} files={data.files} />
+              <MultiDiff bundle={bundle} panelId={panelId} root={data.root} files={data.files} />
             </div>
           </div>
           {top === undefined ? null : (
@@ -301,12 +320,39 @@ function DiffsPanel({ threadId }: PluginThreadPanelProps) {
   );
 }
 
+const OPEN_DIFFS = { actionId: "diffs" };
+
+function OpenDiffsButton(_: PluginThreadHeaderActionProps) {
+  const navigate = useBbNavigate();
+  return (
+    <button
+      type="button"
+      aria-label="Open Diffs (⌘⇧D)"
+      title="Open Diffs (⌘⇧D)"
+      className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+      onClick={() => navigate.openThreadPanel(OPEN_DIFFS)}
+    >
+      <Icon name="FileDiff" className="size-4" aria-hidden />
+    </button>
+  );
+}
+
 export default definePluginApp((app) => {
   app.slots.threadPanelAction({
     id: "diffs",
     title: "Diffs",
-    icon: "GitCompare",
+    icon: "FileDiff",
     layout: "flush",
     component: DiffsPanel,
+  });
+  app.slots.experimental_threadHeaderAction({ id: "open-diffs", title: "Diffs", component: OpenDiffsButton });
+  app.commands.register({
+    id: "open-diffs",
+    title: "Open Diffs",
+    defaultShortcut: { key: "d", mod: true, shift: true },
+    isAvailable: ({ threadId }) => threadId !== null,
+    run: ({ openPanel }) => {
+      openPanel(OPEN_DIFFS);
+    },
   });
 });

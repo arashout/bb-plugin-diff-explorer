@@ -35,16 +35,20 @@ const diffFile = z.object({
 });
 export type DiffFile = z.infer<typeof diffFile>;
 
+const diffTarget = z.enum(["all", "uncommitted"]);
+export type DiffTarget = z.infer<typeof diffTarget>;
+
 export const rpcContract = defineRpcContract({
   assets: {
     input: z.null(),
     output: z.object({ baseUrl: z.string() }),
   },
   load: {
-    input: z.object({ threadId: z.string() }),
+    input: z.object({ threadId: z.string(), target: diffTarget }),
     output: z.object({
       environmentId: z.string(),
       root: z.string(),
+      baseBranch: z.string(),
       files: z.array(diffFile),
       skipped: z.array(z.string()),
     }),

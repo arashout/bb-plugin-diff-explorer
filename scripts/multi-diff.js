@@ -20,7 +20,7 @@ class DocumentItem {
     this.isActive = derived(this, (reader) => editorViewModel.activeDiffItem.read(reader) === this);
     this._isFocusedSource = observableValue(this, constObservable(false));
     this.isFocused = derived(this, (reader) => this._isFocusedSource.read(reader).read(reader));
-    this.isAlive = observableValue(this, true);
+    this.isAlive = constObservable(true);
     const options = instantiationService.createInstance(DiffEditorOptions, documentDiffItem.options);
     this.diffEditorViewModelRef = RefCounted.create(
       instantiationService.createInstance(
