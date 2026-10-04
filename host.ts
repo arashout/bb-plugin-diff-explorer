@@ -53,7 +53,7 @@ class LanguageServer {
     }).then(() => this.notify("initialized", {}));
   }
 
-  async definition(file: string, line: number, column: number, languageId: string): Promise<Location[]> {
+  async open(file: string, languageId: string) {
     await this.ready;
     const uri = pathToFileURL(file).href;
     const text = await readFile(file, "utf8");
@@ -69,6 +69,11 @@ class LanguageServer {
         contentChanges: [{ text }],
       });
     }
+    return uri;
+  }
+
+  async definition(file: string, line: number, column: number, languageId: string): Promise<Location[]> {
+    const uri = await this.open(file, languageId);
     const result = await this.request("textDocument/definition", {
       textDocument: { uri },
       position: { line: line - 1, character: column - 1 },
@@ -169,6 +174,16 @@ export default experimental_defineHostEntry({
       if (spec === undefined) return { locations: [] };
       const locations = await serverFor(root, spec.cmd).definition(file, line, column, spec.languageId);
       return { locations };
+    },
+    // Opens one file per language server so it indexes the project before the first click.
+    async warm({ root, paths }) {
+      const first = new Map<string[], [string, string]>();
+      for (const file of paths) {
+        const spec = SERVERS[path.extname(file).toLowerCase()];
+        if (spec !== undefined && !first.has(spec.cmd)) first.set(spec.cmd, [file, spec.languageId]);
+      }
+      await Promise.all([...first].map(([cmd, [file, languageId]]) => serverFor(root, cmd).open(file, languageId)));
+      return null;
     },
     async read({ path: file }) {
       return { content: await readFile(file, "utf8") };

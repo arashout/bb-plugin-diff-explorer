@@ -327,8 +327,8 @@ function OpenDiffsButton(_: PluginThreadHeaderActionProps) {
   return (
     <button
       type="button"
-      aria-label="Open Diffs (⌘⇧D)"
-      title="Open Diffs (⌘⇧D)"
+      aria-label="Open Diff Explorer (⌘⇧D)"
+      title="Open Diff Explorer (⌘⇧D)"
       className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
       onClick={() => navigate.openThreadPanel(OPEN_DIFFS)}
     >
@@ -340,15 +340,15 @@ function OpenDiffsButton(_: PluginThreadHeaderActionProps) {
 export default definePluginApp((app) => {
   app.slots.threadPanelAction({
     id: "diffs",
-    title: "Diffs",
+    title: "Diff Explorer",
     icon: "FileDiff",
     layout: "flush",
     component: DiffsPanel,
   });
-  app.slots.experimental_threadHeaderAction({ id: "open-diffs", title: "Diffs", component: OpenDiffsButton });
+  app.slots.experimental_threadHeaderAction({ id: "open-diffs", title: "Diff Explorer", component: OpenDiffsButton });
   app.commands.register({
     id: "open-diffs",
-    title: "Open Diffs",
+    title: "Open Diff Explorer",
     defaultShortcut: { key: "d", mod: true, shift: true },
     isAvailable: ({ threadId }) => threadId !== null,
     run: ({ openPanel }) => {

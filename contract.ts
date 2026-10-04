@@ -23,6 +23,10 @@ export const hostContract = defineRpcContract({
     input: z.object({ path: z.string().startsWith("/") }),
     output: z.object({ content: z.string() }),
   },
+  warm: {
+    input: z.object({ root: z.string().startsWith("/"), paths: z.array(z.string().startsWith("/")) }),
+    output: z.null(),
+  },
 });
 
 const diffFile = z.object({

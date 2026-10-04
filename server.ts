@@ -31,6 +31,7 @@ export default async function plugin(bb: BbPluginApi) {
       const environmentId = thread.environmentId;
       const env = await bb.sdk.environments.get({ environmentId });
       if (!env.path) throw new Error("This environment has no workspace path");
+      if (!env.hostId) throw new Error("This environment has no host");
       const root = env.path;
       const baseBranch = env.mergeBaseBranch ?? env.baseBranch ?? env.defaultBranch;
       if (baseBranch === null) throw new Error("This environment has no base branch");
@@ -63,6 +64,9 @@ export default async function plugin(bb: BbPluginApi) {
           newText: f.changeKind === "deleted" ? "" : await side(f.path, "new"),
         })),
       );
+      host
+        .call("warm", { root, paths: files.filter((f) => f.newText !== "").map((f) => path.join(root, f.path)) }, { hostId: env.hostId })
+        .catch((error) => bb.log.warn(`Language server warm-up failed: ${error}`));
       const skipped = diff.files.filter((f) => f.binary || f.loadMode === "too_large").map((f) => f.path);
       return { environmentId, root, baseBranch, files, skipped };
     },

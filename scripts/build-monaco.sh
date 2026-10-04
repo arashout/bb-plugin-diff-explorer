@@ -12,3 +12,4 @@ echo "export { createMultiDiffEditor } from '$PWD/scripts/multi-diff.js';" >>"$e
 rm -rf monaco
 npx esbuild "$entry" --bundle --format=esm --minify --loader:.ttf=file --outfile=monaco/editor.js --log-level=warning
 npx esbuild "$src/editor.worker.js" --bundle --format=esm --minify --outfile=monaco/editor.worker.js --log-level=warning
+cp node_modules/monaco-editor/LICENSE node_modules/monaco-editor/ThirdPartyNotices.txt monaco/

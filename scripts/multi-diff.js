@@ -3,6 +3,7 @@
 // view models, so DocumentItem and EditorViewModel recreate them from VS Code's
 // multiDiffEditorViewModel.ts.
 import { StandaloneServices } from "../node_modules/monaco-editor/esm/vs/editor/standalone/browser/standaloneServices.js";
+import { IStandaloneThemeService } from "../node_modules/monaco-editor/esm/vs/editor/standalone/common/standaloneTheme.js";
 import { IInstantiationService } from "../node_modules/monaco-editor/esm/vs/platform/instantiation/common/instantiation.js";
 import { MultiDiffEditorWidgetImpl } from "../node_modules/monaco-editor/esm/vs/editor/browser/widget/multiDiffEditor/multiDiffEditorWidgetImpl.js";
 import { DiffEditorViewModel } from "../node_modules/monaco-editor/esm/vs/editor/browser/widget/diffEditor/diffEditorViewModel.js";
@@ -67,6 +68,8 @@ class EditorViewModel {
  */
 export function createMultiDiffEditor(element, documents) {
   const instantiationService = StandaloneServices.get(IInstantiationService);
+  // monaco.editor.create does this; without it the theme stylesheet (token and diff colors) is never injected.
+  const theme = StandaloneServices.get(IStandaloneThemeService).registerEditorContainer(element);
   const viewModel = new EditorViewModel(documents, instantiationService);
   const labels = new Map(documents.map((d) => [d.modified.uri.toString(), d.label]));
   const dimension = observableValue("dimension", undefined);
@@ -95,6 +98,7 @@ export function createMultiDiffEditor(element, documents) {
     dispose() {
       resize.disconnect();
       widget.dispose();
+      theme.dispose();
       viewModel.dispose();
     },
   };

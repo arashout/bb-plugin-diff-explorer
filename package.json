@@ -1,14 +1,15 @@
 {
-  "name": "bb-plugin-diff-review",
+  "name": "bb-plugin-diff-explorer",
   "version": "0.1.0",
   "type": "module",
   "private": true,
+  "license": "MIT",
   "engines": {
     "bb": ">=0.44",
     "bbPluginSdk": ">=0.5.29"
   },
   "bb": {
-    "name": "Diff Review",
+    "name": "Diff Explorer",
     "description": "Scrollable diff of every changed file, with go to definition.",
     "branding": {
       "icon": "FileDiff"
